@@ -23,7 +23,7 @@ Reviews open PRs across repos listed in `repos.json`: in `review` mode **only PR
 Uses Muse → Antigravity (`agy`, Google's Gemini agent CLI) → Cursor Agent → Claude Code (priority in `harnesses.json`), with
 cooldown + failover on quota-like errors.
 
-**Models now come from `tiers.json` per PR tier (see "Model tiers" below).** Fallback pins when a tier has no entry / tiers.json is missing: Muse → `muse-wonder-1.0` (`MUSE_REVIEW_MODEL`), Antigravity → `gemini-4-hydrogen-high` (`ANTIGRAVITY_MODEL`, Gemini 4 Hydrogen, pinned Nov 13, 2026). Cursor → `claude-opus-5-5-high`, Claude → `claude-opus-5-5` (`_FALLBACK_MODELS`).
+**Models now come from `tiers.json` per PR tier (see "Model tiers" below).** Fallback pins when a tier has no entry / tiers.json is missing: Muse → `muse-wonder-1.0` (`MUSE_REVIEW_MODEL`), Antigravity → `gemini-4-hydrogen-high` (`ANTIGRAVITY_MODEL`, Gemini 4 Hydrogen, pinned Nov 13, 2026). Cursor → `grok-4.7-high`, Claude → `claude-opus-5-5` (`_FALLBACK_MODELS`).
 
 **Antigravity flags** (prompt must be the argument right after `-p`, stdin is ignored, so a prompt-file pointer is used like Muse):
 - review: `agy -p <pointer> --model gemini-4-hydrogen-high --mode plan --sandbox --settings <session-only JSON> --print-timeout 870s --output-format text`. The session-only settings allow only read-only git/text inspection commands (`_AGY_READONLY_CMDS`: `git diff/log/show/status/grep/blame/ls-files/rev-parse/cat-file/merge-base/rev-list/ls-tree/merge-tree/for-each-ref/…`, `cat`, `head`, `tail`, `ls`, `grep`, `rg`, `wc`, `find`, `sed -n`, `tree`, `file`, `stat`, `diff`, `cut`, `tr`, `jq`, `sort`, `uniq`, `nl`, etc.) and deny `write_file(*)` and `edit_file(*)`; no `--dangerously-skip-permissions`, so anything else is auto-denied in headless mode. Don't add `--disable-slash-commands` (agy then ignores `--mode`).
@@ -85,7 +85,7 @@ pre-check and the CI-pending defer) gets a tier, and each harness then runs with
 |---|---|---|
 | muse | `muse-spark-1.3` | `muse-wonder-1.0` |
 | antigravity | `gemini-4-hydrogen-high` | `gemini-4-neon-high` |
-| cursor | `claude-sonnet-5-5-high` | `claude-opus-5-5-high` |
+| cursor | `grok-4.7-high` | `grok-4.7-high` |
 | claude | `claude-sonnet-5-5` | `claude-opus-5-5` |
 
 (All ids smoke-tested 2026-11-13 in the same read-only mode the review runner uses. `muse-ember-1.0` still fails
@@ -98,7 +98,7 @@ Dependabot triage (they reuse these runners):
 |---|---|
 | muse | `--reasoning-effort high` on every `muse exec` (`MUSE_EFFORT`; Muse's default is already high) |
 | antigravity | `-high` model ids (`gemini-4-hydrogen-high`, `gemini-4-neon-high`), classifier included |
-| cursor | `-high` model ids (`claude-sonnet-5-5-high`, `claude-opus-5-5-high`) |
+| cursor | `-high` model id (`grok-4.7-high`) |
 | claude | `--effort high` on every `claude -p` (`CLAUDE_EFFORT`); ids stay `claude-sonnet-5-5` / `claude-opus-5-5` |
 
 How the tier is picked (first match wins):

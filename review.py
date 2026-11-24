@@ -1213,7 +1213,7 @@ def _tier_model(hid: str, default: str | None = None) -> str | None:
 # Used when a tier has no entry / tiers.json is missing: the strongest high-reasoning model per harness
 # (Claude's effort comes from --effort, not the id).
 _FALLBACK_MODELS = {"muse": MUSE_REVIEW_MODEL, "antigravity": ANTIGRAVITY_MODEL,
-                    "cursor": "claude-opus-5-5-high", "claude": "claude-opus-5-5"}
+                    "cursor": "grok-4.7-high", "claude": "claude-opus-5-5"}
 
 
 def _model_args(hid: str) -> list[str]:

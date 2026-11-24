@@ -136,7 +136,7 @@ class T(unittest.TestCase):
         rv.set_active_tier(CFG, "everyday")
         self.assertEqual(rv._tier_model("muse", rv.MUSE_REVIEW_MODEL), "muse-spark-1.3")
         rv.set_active_tier(None, None)
-        self.assertEqual(rv._model_args("cursor"), ["--model", "claude-opus-5-5-high"])  # fallback, not CLI default
+        self.assertEqual(rv._model_args("cursor"), ["--model", "grok-4.7-high"])  # fallback, not CLI default
         self.assertEqual(rv._tier_model("antigravity", rv.ANTIGRAVITY_MODEL), "gemini-4-hydrogen-high")
 
     def test_runner_argv(self):
@@ -144,7 +144,7 @@ class T(unittest.TestCase):
         with mock.patch.object(rv, "run") as r:
             r.return_value = subprocess.CompletedProcess([], 0, "x", "")
             rv.run_cursor(Path(self.tmp.name), "p"); a = r.call_args[0][0]
-            self.assertEqual(a[:4], ["agent", "-p", "--model", "claude-sonnet-5-5-high"])
+            self.assertEqual(a[:4], ["agent", "-p", "--model", "grok-4.7-high"])
             rv.run_muse(Path(self.tmp.name), "p"); a = r.call_args[0][0]
             self.assertEqual(a[a.index("--model") + 1], "muse-spark-1.3")
 
@@ -272,7 +272,7 @@ class HighReasoning(unittest.TestCase):
             self.assertEqual(a[a.index("--model") + 1], "gemini-4-hydrogen-high")
 
     def test_fallback_models_are_high(self):
-        for hid, want in (("cursor", "claude-opus-5-5-high"), ("claude", "claude-opus-5-5"),
+        for hid, want in (("cursor", "grok-4.7-high"), ("claude", "claude-opus-5-5"),
                           ("antigravity", "gemini-4-hydrogen-high")):
             self.assertEqual(rv._model_label(hid), want)
 
