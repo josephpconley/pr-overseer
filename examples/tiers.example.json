@@ -1,0 +1,150 @@
+{
+  "_notes": "Classifier gate. Every PR the overseer is about to review (after the Dependabot / already-reviewed / CI-pending skips) is sorted into a tier, then each harness runs with that tier's model. Order: 1) per-repo override (repos.json entry \"tier\": \"everyday\"|\"deep\"), 2) deterministic rules below, 3) classifier model (agy read-only) for the in-between PRs, 4) anything that fails or can't be parsed -> default_tier_on_failure. A harness missing from a tier keeps its old behavior (Muse/Antigravity pinned constants in review.py, Cursor/Claude built-in fallbacks in review.py). Fixes reuse the PR's tier (cached per head SHA in reviews/<owner>__<repo>/TIER-PR-N.json). Dependabot triage uses dependabot_tier, no classifier call. enabled=false -> classifier off, everything uses default_tier. Edit freely; bad JSON -> overseer logs a warning and falls back to the pre-tiers behavior.",
+  "enabled": true,
+  "default_tier": "deep",
+  "dependabot_tier": "everyday",
+  "classifier": {
+    "enabled": true,
+    "harness": "antigravity",
+    "model": "gemini-4-hydrogen-high",
+    "timeout_seconds": 240,
+    "default_tier_on_failure": "deep",
+    "max_diff_chars": 12000,
+    "max_body_chars": 2000
+  },
+  "rules": {
+    "_notes": "Globs are case-insensitive fnmatch on the repo-relative path ('*' also crosses '/'; a leading '**/' also matches at the repo root; a pattern with no '/' matches the file name). Evaluation order: deep_labels, deep_globs, manifest major-version bump, large-diff limits -> deep; then all-files-in everyday_globs (<= everyday_globs_max_lines) or small-diff limits -> everyday; otherwise the classifier model decides. Migrations are NOT a deep rule (Joe, 2026-11-13: migrations are safer and can be tier 1): migration paths, *.sql and the `migration` label fall through to the normal flow (everyday if small, otherwise the classifier, which can still pick deep).",
+    "deep_labels": [
+      "security",
+      "breaking",
+      "breaking-change",
+      "deep-review"
+    ],
+    "everyday_labels": [
+      "docs",
+      "documentation",
+      "chore",
+      "trivial"
+    ],
+    "deep_globs": [
+      "**/auth/**",
+      "**/*auth*.*",
+      "**/security/**",
+      "**/*permission*",
+      "**/*rbac*",
+      "**/*secret*",
+      "**/*crypt*",
+      ".github/workflows/**",
+      ".github/actions/**",
+      "infra/**",
+      "**/terraform/**",
+      "*.tf",
+      "*.tfvars",
+      "**/k8s/**",
+      "**/helm/**",
+      "**/cdk/**",
+      "amplify/backend/**",
+      "Dockerfile*",
+      "docker-compose*.yml",
+      "**/schema*",
+      "**/*.prisma",
+      "**/models.py",
+      "**/*payment*",
+      "**/*billing*",
+      "**/*stripe*",
+      "**/*invoice*"
+    ],
+    "everyday_globs": [
+      "*.md",
+      "*.mdx",
+      "*.rst",
+      "*.txt",
+      "docs/**",
+      "LICENSE*",
+      "CHANGELOG*",
+      "CODEOWNERS",
+      ".gitignore",
+      ".gitattributes",
+      ".editorconfig",
+      ".prettierrc*",
+      ".prettierignore",
+      ".eslintrc*",
+      ".vscode/**",
+      ".cursor/**",
+      ".claude/**",
+      "AGENTS.md",
+      "CLAUDE.md",
+      "*.png",
+      "*.jpg",
+      "*.jpeg",
+      "*.gif",
+      "*.svg",
+      "*.ico"
+    ],
+    "everyday_globs_max_lines": 600,
+    "small_max_lines": 40,
+    "small_max_files": 3,
+    "large_min_lines": 800,
+    "large_min_files": 30,
+    "manifest_globs": [
+      "package.json",
+      "pyproject.toml",
+      "requirements*.txt",
+      "Pipfile",
+      "Cargo.toml",
+      "go.mod",
+      "Gemfile"
+    ],
+    "manifest_major_bump_deep": true
+  },
+  "tiers": {
+    "everyday": {
+      "muse": "muse-spark-1.3",
+      "antigravity": "gemini-4-hydrogen-high",
+      "cursor": "claude-sonnet-5-5-high",
+      "claude": "claude-sonnet-5-5"
+    },
+    "deep": {
+      "muse": "muse-wonder-1.0",
+      "antigravity": "gemini-4-neon-high",
+      "cursor": "claude-opus-5-5-high",
+      "claude": "claude-opus-5-5"
+    }
+  },
+  "human_review": {
+    "_notes": "Extra-eyes ping for deep PRs that are REALLY risky or REALLY large. The deep frontier review still runs; in addition, once per PR, the overseer adds `label`, posts one comment starting '**Overseer: needs human review**' that @mentions `mention`, and emails `email_to` (piped to email_command, an RFC 822 message on stdin; default sendmail -t). Fires only when tier=deep AND one of `rules` fires: labels (this block's `labels`), globs (rules.deep_globs unless `globs` is set), major_bump (manifest major-version bump), size (>= min_lines changed lines or >= min_files files). Never for classifier-only or classifier-failure deep, the 800-line/30-file deep rule alone, or Dependabot. Dedup: label present, a prior marker comment by github_login, or reviews/<owner>__<repo>/HUMAN-PR-N.json. Failures are logged, never block the review. enabled=false turns it off; email_to empty -> email step logs and no-ops. hold_merge (default true): in self_review repos a flagged PR (just flagged, label on the PR, or a HUMAN record whose label was never confirmed added) is NOT auto-merged even on APPROVE; log line 'merge held: needs-human-review'. Once the owner removes the label, a later --force re-review merges normally (record gets cleared_at). Email transport: email_transport \"smtp\" = built-in smtplib sender (smtp_host:smtp_port with STARTTLS, login smtp_user, password read at send time from password_file, which must be mode 600 or tighter; whitespace stripped; never logged). \"sendmail\" = pipe to email_command. Test: python3 review.py --test-email. channels (default [\"email\"]): which pings to send — \"email\", \"label\" (add the label), \"comment\" (@mention comment). Email-only since 2026-11-13; an existing label or marker comment still counts as already-flagged. The merge hold is based on the local HUMAN record: release with python3 review.py --release-human-review --repo OWNER/NAME --pr N, then --force re-review. Legacy: removing the label on an already-labeled PR also releases it.",
+    "enabled": true,
+    "channels": [
+      "email"
+    ],
+    "label": "needs-human-review",
+    "label_color": "b60205",
+    "label_description": "Overseer: flagged for a human second look",
+    "mention": "@your-github-login",
+    "email_to": "you@example.com",
+    "email_transport": "smtp",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_user": "you@example.com",
+    "password_file": "~/.config/pr-overseer/gmail-app-password",
+    "email_command": [
+      "/usr/sbin/sendmail",
+      "-t",
+      "-oi"
+    ],
+    "min_lines": 1500,
+    "min_files": 50,
+    "rules": [
+      "labels",
+      "globs",
+      "major_bump",
+      "size"
+    ],
+    "labels": [
+      "security",
+      "breaking",
+      "breaking-change"
+    ],
+    "hold_merge": true
+  }
+}

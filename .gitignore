@@ -1,0 +1,32 @@
+# Allowlist: ignore everything in the repo root, then un-ignore
+# only the public source. Local config, logs, reviews, locks,
+# backups, and secrets stay out of git history.
+
+/*
+
+# Tracked source
+!/.gitignore
+!/review.py
+!/testrefactor.py
+!/test-refactor-run.sh
+!/cron-run.sh
+!/prune-logs.sh
+!/README.md
+!/test_*.py
+!/stubs/
+!/stubs/**
+!/examples/
+!/examples/**
+
+# Explicit denylist (belt and suspenders; already covered by /*)
+repos.json
+harnesses.json
+tiers.json
+crontab.current
+logs/
+reviews/
+.reviews*
+*.lock
+__pycache__/
+*.bak*
+.env*

@@ -1,0 +1,30 @@
+{
+  "notes": "Tried in order (muse \u2192 antigravity \u2192 cursor \u2192 claude). cooldown_until is ISO-8601 UTC; null means available. On quota-like failure the overseer sets cooldown (parsed reset if present, else +15m) and fails over.",
+  "default_cooldown_minutes": 15,
+  "harnesses": [
+    {
+      "id": "muse",
+      "label": "Muse",
+      "bin": "muse",
+      "cooldown_until": null
+    },
+    {
+      "id": "antigravity",
+      "label": "Antigravity (Gemini agent CLI)",
+      "bin": "agy",
+      "cooldown_until": null
+    },
+    {
+      "id": "cursor",
+      "label": "Cursor Agent CLI",
+      "bin": "agent",
+      "cooldown_until": null
+    },
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "bin": "claude",
+      "cooldown_until": null
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "github_login": "your-github-login",
+  "labels": true,
+  "labels_notes": "PR state labels ('review: in progress / approved / changes requested / needs human / fixing / fix limit reached'), one at a time per PR. true = on for every repo; a per-repo \"labels\": false opts that repo out. Dependabot PRs are never labeled. `pr-overseer-review --sync-labels [--repo R] [--live]` shows (dry-run) or applies labels for PRs reviewed earlier.",
+  "notes": "review mode: only open PRs where github_login is a requested reviewer (review-requested:@me); never merges. self_review mode: all open non-draft PRs authored by github_login (no review request needed), plus PRs that request github_login's review. On VERDICT APPROVE of your own PR, post the review as a comment and, when merge_on_approve is true (default), admin-merge with merge_method (squash/merge/rebase). Set merge_on_approve false (or merge_method none/off) to self-review your own PRs without merging \u2014 use this in shared orgs where others review. REQUEST_CHANGES never merges. self_review only merges PRs authored by github_login; others' PRs in that repo get a normal review and are never merged. Edit this list freely. path must be a local clone.",
+  "address_feedback": true,
+  "address_feedback_notes": "self_review only: when the latest overseer verdict on your own PR is REQUEST_CHANGES and no commits landed since, true = cron runs a harness (never the one that made the latest commit) to fix it, commits with an Overseer-Fix-By trailer and pushes to the PR branch (no force); next tick re-reviews. Capped at max_fix_attempts per PR (state: reviews/<owner>__<repo>/FIX-PR-N.json). Per-repo address_feedback overrides this. false = never auto-push; run `pr-overseer-review --address-feedback --repo R --pr N` by hand. RC + new commits always gets a re-review regardless.",
+  "max_fix_attempts": 2,
+  "repos": [
+    {
+      "repo": "your-org/your-repo",
+      "path": "/path/to/your-repo",
+      "review_mode": "review"
+    },
+    {
+      "repo": "your-org/your-other-repo",
+      "path": "/path/to/your-other-repo",
+      "review_mode": "self_review",
+      "merge_method": "squash",
+      "test_refactor": true
+    },
+    {
+      "repo": "your-org/optional-flags-repo",
+      "path": "/path/to/optional-flags-repo",
+      "review_mode": "review",
+      "tier": "everyday",
+      "dependabot_ignore_checks": [
+        "QA Plan"
+      ],
+      "test_refactor": {
+        "top_n": 3,
+        "max_changed_lines": 200,
+        "format_command": [
+          [
+            "pnpm",
+            "exec",
+            "prettier",
+            "--write",
+            "{files}"
+          ]
+        ]
+      }
+    },
+    {
+      "repo": "shared-org/shared-repo",
+      "path": "/path/to/shared-repo",
+      "review_mode": "self_review",
+      "merge_on_approve": false,
+      "address_feedback": false
+    }
+  ],
+  "test_refactor_notes": "Weekly test-suite review (--test-refactor; cron Sunday 9pm with --live). Per repo: \"test_refactor\": true or an object overriding testrefactor.DEFAULTS. Opens at most one PR per repo per week, labeled test-refactor; never auto-merged until python3 review.py --release-human-review --repo R --pr N."
+}
