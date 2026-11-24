@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest import mock
 spec = importlib.util.spec_from_file_location("rv", Path(__file__).resolve().parent / "review.py")
 rv = importlib.util.module_from_spec(spec); spec.loader.exec_module(rv)
-CFG = json.loads((Path(__file__).resolve().parent / "tiers.json").read_text())
+# Use the tracked example config, not the live (gitignored, locally edited) tiers.json.
+CFG = json.loads((Path(__file__).resolve().parent / "examples" / "tiers.example.json").read_text())
 
 
 def meta(files, labels=(), title="t", head="abc123"):
@@ -137,7 +138,7 @@ class T(unittest.TestCase):
         self.assertEqual(rv._tier_model("muse", rv.MUSE_REVIEW_MODEL), "muse-spark-1.3")
         rv.set_active_tier(None, None)
         self.assertEqual(rv._model_args("cursor"), ["--model", "grok-4.7-high"])  # fallback, not CLI default
-        self.assertEqual(rv._tier_model("antigravity", rv.ANTIGRAVITY_MODEL), "gemini-4-hydrogen-high")
+        self.assertEqual(rv._tier_model("antigravity", rv.ANTIGRAVITY_MODEL), "gemini-4-hydrogen-medium")
 
     def test_runner_argv(self):
         rv.set_active_tier(CFG, "everyday")
@@ -269,11 +270,11 @@ class HighReasoning(unittest.TestCase):
             r.return_value = subprocess.CompletedProcess([], 0, "TIER: deep\nREASON: x\n", "")
             rv.run_classifier_llm("p", {"harness": "muse"}, hp); a = r.call_args[0][0]
             self.assertEqual(a[a.index("--reasoning-effort") + 1], "high")
-            self.assertEqual(a[a.index("--model") + 1], "gemini-4-hydrogen-high")
+            self.assertEqual(a[a.index("--model") + 1], "gemini-4-hydrogen-medium")
 
     def test_fallback_models_are_high(self):
         for hid, want in (("cursor", "grok-4.7-high"), ("claude", "claude-opus-5-5"),
-                          ("antigravity", "gemini-4-hydrogen-high")):
+                          ("antigravity", "gemini-4-hydrogen-medium")):
             self.assertEqual(rv._model_label(hid), want)
 
 
@@ -285,7 +286,7 @@ class LLMParse(unittest.TestCase):
         with mock.patch.object(rv, "run") as r, mock.patch.object(rv.shutil, "which", return_value="/x"):
             r.return_value = subprocess.CompletedProcess([], 0, "TIER: deep\nREASON: touches auth\n", "")
             self.assertEqual(rv.run_classifier_llm("p", cc, hp), ("deep", "touches auth"))
-            a = r.call_args[0][0]; self.assertIn("gemini-4-hydrogen-high", a); self.assertIn("plan", a)
+            a = r.call_args[0][0]; self.assertIn("gemini-4-hydrogen-medium", a); self.assertIn("plan", a)
             r.return_value = subprocess.CompletedProcess([], 0, "I think it's fine", "")
             self.assertIsNone(rv.run_classifier_llm("p", cc, hp)[0])
             r.return_value = subprocess.CompletedProcess([], 1, "", "boom")

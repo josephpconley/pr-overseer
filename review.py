@@ -1048,7 +1048,8 @@ def run_cursor(repo_path: Path, prompt: str) -> subprocess.CompletedProcess[str]
 MUSE_REVIEW_MODEL = "muse-wonder-1.0"
 # Nov 18, 2026 (Joe): every harness runs at high reasoning where the CLI allows it. Muse exec takes
 # --reasoning-effort (none..ultra; its default is already high, pinned explicitly); Claude takes --effort;
-# Cursor/Antigravity encode the level in the model id (...-high). "high", not xhigh/max.
+# Cursor encodes the level in the model id (...-high). "high", not xhigh/max.
+# Nov 24, 2026 (Joe): Antigravity drops to medium (gemini-4-*-medium ids), classifier included.
 MUSE_EFFORT = "high"
 CLAUDE_EFFORT = "high"
 
@@ -1092,14 +1093,14 @@ def run_muse(repo_path: Path, prompt: str, pointer_tail: str | None = None) -> s
 # Added Nov 13, 2026 (Joe): second in the chain after Muse. Like Muse it is one of the
 # narrow exceptions to "never pass --model": pinned to Gemini 4 Hydrogen. `agy models`
 # lists gemini-4-hydrogen-{low,medium,high,xhigh}; the bare id "gemini-4-hydrogen" is also
-# accepted, but the explicit -high id is pinned so the effort level is fixed.
+# accepted, but the explicit -medium id is pinned so the effort level is fixed (was -high until Nov 24, 2026).
 # Headless: `agy -p <prompt>` (prompt must be the argument right after -p; stdin is not read),
 # so a short pointer to a prompt file is used (avoids E2BIG on large diffs, as with Muse).
 # Review: --mode plan + --sandbox and NO --dangerously-skip-permissions → reads work, any
 # edit/command tool is auto-denied in headless mode. Fix: --mode accept-edits + --sandbox
 # (file edits auto-approved, terminal commands still denied). Do NOT add --disable-slash-commands:
 # agy 1.5.8 then ignores --mode ("--mode plan has no effect while slash command expansion is disabled").
-ANTIGRAVITY_MODEL = "gemini-4-hydrogen-high"
+ANTIGRAVITY_MODEL = "gemini-4-hydrogen-medium"
 ANTIGRAVITY_PRINT_TIMEOUT = "870s"   # agy's own limit, just under run(timeout=900)
 # --mode plan makes the agent explore with Bash, which headless mode soft-denies (→ empty
 # output). Session-only --settings (never saved) allow a small read-only command set
@@ -1197,7 +1198,7 @@ def run_antigravity(repo_path: Path, prompt: str, pointer_tail: str | None = Non
 
 # --- Tiered models + classifier gate (tiers.json; added Nov 13, 2026, Joe) ----------
 # Each PR about to be reviewed gets a tier ("everyday" | "deep"): per-repo override →
-# deterministic rules → classifier model (agy read-only, gemini-4-hydrogen-high) → on any
+# deterministic rules → classifier model (agy read-only, gemini-4-hydrogen-medium) → on any
 # failure "deep". The runners then pass that tier's --model per harness. A harness with
 # no model in the tier keeps the pre-tiers behavior (MUSE_REVIEW_MODEL / ANTIGRAVITY_MODEL
 # pins, Cursor/Claude _FALLBACK_MODELS). tiers.json missing/invalid/disabled → pre-tiers models.
@@ -1394,7 +1395,7 @@ def run_classifier_llm(prompt: str, ccfg: dict[str, Any], harnesses_path: Path
                        ) -> tuple[str | None, str]:
     """Read-only classifier call in a throwaway empty dir. (tier|None, reason)."""
     hid = (ccfg.get("harness") or "antigravity").strip()
-    model = (ccfg.get("model") or "gemini-4-hydrogen-high").strip()
+    model = (ccfg.get("model") or "gemini-4-hydrogen-medium").strip()
     timeout = int(ccfg.get("timeout_seconds") or 240)
     hdata = load_json(harnesses_path)
     if hid not in {h["id"] for h in available_harnesses(hdata)}:
@@ -1509,7 +1510,7 @@ def classify_pr(repo: str, number: int, cfg: dict[str, Any], harnesses_path: Pat
             return dt, f"{reason}; classifier disabled → default_tier", "config"
         if not use_llm:
             return "?", f"{reason} → would ask classifier ({ccfg.get('harness', 'antigravity')} "\
-                        f"{ccfg.get('model', 'gemini-4-hydrogen-high')})", "llm-pending"
+                        f"{ccfg.get('model', 'gemini-4-hydrogen-medium')})", "llm-pending"
         t, why = run_classifier_llm(build_classifier_prompt(repo, meta, diff, ccfg), ccfg, harnesses_path)
         if t is None:
             return fail_tier, why, "fallback"

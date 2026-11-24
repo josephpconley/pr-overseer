@@ -23,10 +23,10 @@ Reviews open PRs across repos listed in `repos.json`: in `review` mode **only PR
 Uses Muse → Antigravity (`agy`, Google's Gemini agent CLI) → Cursor Agent → Claude Code (priority in `harnesses.json`), with
 cooldown + failover on quota-like errors.
 
-**Models now come from `tiers.json` per PR tier (see "Model tiers" below).** Fallback pins when a tier has no entry / tiers.json is missing: Muse → `muse-wonder-1.0` (`MUSE_REVIEW_MODEL`), Antigravity → `gemini-4-hydrogen-high` (`ANTIGRAVITY_MODEL`, Gemini 4 Hydrogen, pinned Nov 13, 2026). Cursor → `grok-4.7-high`, Claude → `claude-opus-5-5` (`_FALLBACK_MODELS`).
+**Models now come from `tiers.json` per PR tier (see "Model tiers" below).** Fallback pins when a tier has no entry / tiers.json is missing: Muse → `muse-wonder-1.0` (`MUSE_REVIEW_MODEL`), Antigravity → `gemini-4-hydrogen-medium` (`ANTIGRAVITY_MODEL`, Gemini 4 Hydrogen, pinned Nov 13, 2026). Cursor → `grok-4.7-high`, Claude → `claude-opus-5-5` (`_FALLBACK_MODELS`).
 
 **Antigravity flags** (prompt must be the argument right after `-p`, stdin is ignored, so a prompt-file pointer is used like Muse):
-- review: `agy -p <pointer> --model gemini-4-hydrogen-high --mode plan --sandbox --settings <session-only JSON> --print-timeout 870s --output-format text`. The session-only settings allow only read-only git/text inspection commands (`_AGY_READONLY_CMDS`: `git diff/log/show/status/grep/blame/ls-files/rev-parse/cat-file/merge-base/rev-list/ls-tree/merge-tree/for-each-ref/…`, `cat`, `head`, `tail`, `ls`, `grep`, `rg`, `wc`, `find`, `sed -n`, `tree`, `file`, `stat`, `diff`, `cut`, `tr`, `jq`, `sort`, `uniq`, `nl`, etc.) and deny `write_file(*)` and `edit_file(*)`; no `--dangerously-skip-permissions`, so anything else is auto-denied in headless mode. Don't add `--disable-slash-commands` (agy then ignores `--mode`).
+- review: `agy -p <pointer> --model gemini-4-hydrogen-medium --mode plan --sandbox --settings <session-only JSON> --print-timeout 870s --output-format text`. The session-only settings allow only read-only git/text inspection commands (`_AGY_READONLY_CMDS`: `git diff/log/show/status/grep/blame/ls-files/rev-parse/cat-file/merge-base/rev-list/ls-tree/merge-tree/for-each-ref/…`, `cat`, `head`, `tail`, `ls`, `grep`, `rg`, `wc`, `find`, `sed -n`, `tree`, `file`, `stat`, `diff`, `cut`, `tr`, `jq`, `sort`, `uniq`, `nl`, etc.) and deny `write_file(*)` and `edit_file(*)`; no `--dangerously-skip-permissions`, so anything else is auto-denied in headless mode. Don't add `--disable-slash-commands` (agy then ignores `--mode`).
 - fix: same but `--mode accept-edits` (file edits auto-approved; tests/builds/other commands denied).
 - agy exits 0 with empty stdout when a denied tool kills the turn (`jetski: no output produced …`); `_agy_normalize()` turns that (and any permission-denial abort) into exit 1 + empty stdout so the chain cleanly fails over to the next harness (the fix runner also resets the throwaway worktree first). When `gh pr diff` fails on oversized PRs (>20k lines), `fetch_pr_diff()` falls back to a local `git diff --stat` + `git diff <base>...HEAD` inside the worktree so harnesses receive the diff directly.
 
@@ -84,20 +84,20 @@ pre-check and the CI-pending defer) gets a tier, and each harness then runs with
 | Harness | everyday | deep |
 |---|---|---|
 | muse | `muse-spark-1.3` | `muse-wonder-1.0` |
-| antigravity | `gemini-4-hydrogen-high` | `gemini-4-neon-high` |
+| antigravity | `gemini-4-hydrogen-medium` | `gemini-4-neon-medium` |
 | cursor | `grok-4.7-high` | `grok-4.7-high` |
 | claude | `claude-sonnet-5-5` | `claude-opus-5-5` |
 
 (All ids smoke-tested 2026-11-13 in the same read-only mode the review runner uses. `muse-ember-1.0` still fails
 `--disable-write` runs, so it is not in a tier.) Harness order/failover/cooldowns are unchanged; only the model differs.
 
-**Reasoning level (2026-11-18): everything runs at `high`** (not xhigh/max), including the classifier, fix passes, test-refactor and
+**Reasoning level (2026-11-18): everything runs at `high`** (not xhigh/max) **except Antigravity, which runs at `medium` (2026-11-24)**, including the classifier, fix passes, test-refactor and
 Dependabot triage (they reuse these runners):
 
-| Harness | How high is set |
+| Harness | How the level is set |
 |---|---|
 | muse | `--reasoning-effort high` on every `muse exec` (`MUSE_EFFORT`; Muse's default is already high) |
-| antigravity | `-high` model ids (`gemini-4-hydrogen-high`, `gemini-4-neon-high`), classifier included |
+| antigravity | `-medium` model ids (`gemini-4-hydrogen-medium`, `gemini-4-neon-medium`), classifier included |
 | cursor | `-high` model id (`grok-4.7-high`) |
 | claude | `--effort high` on every `claude -p` (`CLAUDE_EFFORT`); ids stay `claude-sonnet-5-5` / `claude-opus-5-5` |
 
@@ -115,7 +115,7 @@ How the tier is picked (first match wins):
    still pick deep for a clearly destructive one, e.g. dropping data live code still reads). Schema files
    (`**/schema*`, `*.prisma`, `models.py`) are still deep.
 3. **Classifier model** for everything in between: `agy` read-only (`--mode plan --sandbox`, same read-only settings
-   as reviews) with `gemini-4-hydrogen-high`, in a throwaway empty dir, given title, body, labels, file list with +/-
+   as reviews) with `gemini-4-hydrogen-medium`, in a throwaway empty dir, given title, body, labels, file list with +/-
    and the first 12k chars of the diff. It must answer `TIER: everyday|deep` + `REASON: …`.
    *Potential drop-in:* an open-source `qwen3-coder` model (e.g., via local Ollama or an OpenAI-compatible endpoint)
    fits well here — the classifier requires no tool calls, runs on bounded inline context (≤12k diff / ≤2k body),
