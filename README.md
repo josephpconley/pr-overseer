@@ -142,15 +142,25 @@ Turn off: `"enabled": false` in tiers.json (pre-tiers pins), or `classifier.enab
 ## Needs-human-review ping (`tiers.json` → `human_review`, added 2026-11-13)
 
 For deep PRs that are **really risky or really large**, the normal frontier (deep-tier) review still runs and
-is posted as usual. In addition, right after the review is posted (and before any self_review merge), the
-overseer pings you **once per PR** through `human_review.channels` (default `["email"]`, email-only since
+is saved locally. What gets posted to GitHub depends on authorship:
+
+- **PRs not authored by `github_login`** (added 2026-11-25): **no review is posted to GitHub** (neither `APPROVE`,
+  soft approval, nor `REQUEST_CHANGES`, and no opt-in `human_review` comment/label ping). Instead, the
+  needs-human-review email includes the **full review** so you can review manually and handle messaging directly.
+  The local `HUMAN-PR-<N>.json` record (`"review_withheld": true`) causes subsequent cron ticks to skip the PR
+  quietly (`--force` or a PR URL still re-runs and emails the fresh full review without posting to GitHub).
+- **PRs authored by `github_login`**: the review is posted as usual (with a soft-approval note on `APPROVE`,
+  and `hold_merge` in `self_review` repos).
+
+In addition, the overseer pings you through `human_review.channels` (default `["email"]`, email-only since
 2026-11-13):
 
-- `"email"` (default): emails `email_to` the rule that fired, size, verdict and the PR link. When the merge is
-  held, the subject starts `[overseer] Merge held, needs human review:` and the body gives the release command.
-- `"label"` (opt-in): adds the `needs-human-review` label (created if missing; added via the REST labels API,
+- `"email"` (default): emails `email_to` the rule that fired, author, size, verdict, PR link, and the **full review**.
+  When the merge is held, the subject starts `[overseer] Merge held, needs human review:` and the body gives the
+  release command. When a non-own review is withheld, the subject starts `[overseer] Review not posted, needs human review:`.
+- `"label"` (opt-in, skipped for withheld non-own reviews): adds the `needs-human-review` label (created if missing; added via the REST labels API,
   because `gh pr edit` fails on the Projects-classic GraphQL deprecation).
-- `"comment"` (opt-in): one PR comment starting `**Overseer: needs human review**` that @mentions `mention`.
+- `"comment"` (opt-in, skipped for withheld non-own reviews): one PR comment starting `**Overseer: needs human review**` that @mentions `mention`.
 
 Labels and comments already on GitHub from earlier runs are left alone.
 
@@ -239,17 +249,24 @@ doesn't notify you of your own @mention. The label and email are the real pings 
 Turn off: `"human_review": {"enabled": false}`. Missing block → the code defaults above (enabled, no email).
 Tests: `python3 test_human_review.py`.
 
-### Soft approval for flagged PRs (added 2026-11-18)
+### Withheld reviews & soft approval for flagged PRs (updated 2026-11-25)
 
-When a PR is flagged for human review (the trigger above; evaluated before the review is posted, independent of the
-once-per-PR marker, so `--force` re-reviews stay soft) and the verdict is **APPROVE**, the overseer does **not** submit a
-formal GitHub approval. Instead it posts a **COMMENT-type review** starting
-`**Overseer soft approval — VERDICT: APPROVE (pending human review)**` that says a human reviewer must give the actual
-approval. `self_review` own PRs already get a comment; they keep the `**Overseer self-review — VERDICT: APPROVE**` header
-(the duplicate-review skip and the merge gate parse it) plus a one-line soft-approval note, and the merge stays held
-(`hold_merge`). REQUEST_CHANGES, unflagged PRs and Dependabot PRs behave as before. A soft approval is a COMMENTED review by
-`github_login`, so the already-reviewed gate skips the PR like any other reviewed PR. `--dry-run` says
-`an APPROVE verdict would be a SOFT approval`. Code: `soft_approval_reason()`, `submit_github_review(soft_why=…)`,
+When a PR is flagged for human review (the trigger above; evaluated before anything is posted, independent of the
+once-per-PR marker, so `--force` re-reviews stay consistent):
+
+- **Not authored by `github_login`**: **no review is posted to GitHub** at all — neither `APPROVE` nor
+  `REQUEST_CHANGES`. The review is saved locally and included in full in the needs-human-review email so you can
+  review manually and handle messaging. `HUMAN-PR-<N>.json` records `"review_withheld": true` so cron does not
+  re-review the PR on later ticks.
+- **Authored by `github_login`** + verdict **APPROVE**: the overseer does **not** submit a formal GitHub approval.
+  In `self_review` repos, own PRs keep the `**Overseer self-review — VERDICT: APPROVE**` header (the duplicate-review
+  skip and merge gate parse it) plus a one-line soft-approval note, and the merge stays held (`hold_merge`); in
+  `review` mode it posts a **COMMENT-type review** starting
+  `**Overseer soft approval — VERDICT: APPROVE (pending human review)**`.
+
+Unflagged PRs and Dependabot PRs behave as before. `--dry-run` says `NO review would be posted to GitHub` for
+flagged PRs by other authors and `an APPROVE verdict would be a SOFT approval` for your own flagged PRs.
+Code: `human_review_reason()`, `soft_approval_reason()`, `withheld_human_review_by()`, `submit_github_review(soft_why=…)`,
 `post_review_comment(soft_why=…)`.
 
 ### No self-mentions in PR titles / descriptions (added 2026-11-18)
@@ -314,7 +331,7 @@ mentions the overseer, in line with the no-self-mention rule), share the `review
 | `review: in progress` | a review has started (after the CI-pending defer and the worktree setup). If the review is deferred or fails, it is removed and the previous state label is put back |
 | `review: approved` | the review verdict is APPROVE and nothing is flagged or held |
 | `review: changes requested` | the review verdict is REQUEST_CHANGES |
-| `review: needs human` | the APPROVE was a soft approval (flagged for human review), or the merge is held (needs-human-review / test-refactor hold) |
+| `review: needs human` | the PR was flagged for human review (withheld for other authors, or soft approval / merge held on own PRs, or test-refactor hold) |
 | `review: fixing` | the address-feedback fix was pushed; the next tick re-reviews it |
 | `review: fix limit reached` | automatic fixing gave up (`max_fix_attempts` used, or the fix said NO_CHANGES / CANNOT_FIX) |
 

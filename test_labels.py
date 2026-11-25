@@ -127,6 +127,7 @@ class Derive(unittest.TestCase):
     def test_states(self):
         d = rv.derive_state
         self.assertEqual(d({"latest": None}, {}, 2, False)[0], None)
+        self.assertEqual(d({"latest": None}, {}, 2, True)[0], "needs_human")
         self.assertEqual(d(self.st("APPROVE"), {}, 2, False)[0], "approved")
         self.assertEqual(d(self.st("APPROVE"), {}, 2, True)[0], "needs_human")
         self.assertEqual(d(self.st("COMMENTED"), {}, 2, True)[0], "needs_human")

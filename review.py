@@ -33,9 +33,15 @@ Exception (self_review, own PRs): when the latest overseer verdict is REQUEST_CH
     default 2; state in reviews/<owner>__<repo>/FIX-PR-<N>.json). Auto mode needs
     repos.json address_feedback=true; --address-feedback is the explicit entry point.
 Needs-human-review: deep PRs that hit a hard-risk rule or are very large (>= 1500 lines / 50 files)
-still get the normal review, plus once per PR an email (tiers.json "human_review"; channels default
-["email"], label/comment opt-in; see flag_for_human_review()). self_review: flagged PRs are NOT
-auto-merged (hold_merge, default true) until `--release-human-review --repo X --pr N` and a --force re-review.
+still get the normal deep review, plus an email with the full review (tiers.json "human_review";
+channels default ["email"], label/comment opt-in; see flag_for_human_review()).
+  * PRs authored by github_login: review is still posted (soft-approval note on APPROVE) and
+    self_review PRs are NOT auto-merged (hold_merge, default true) until
+    `--release-human-review --repo X --pr N` and a --force re-review.
+  * PRs NOT authored by github_login: NO review is posted to GitHub (neither APPROVE nor
+    REQUEST_CHANGES); the full review is saved locally and emailed so a human can review and
+    handle messaging directly. Subsequent cron ticks skip the PR via the local HUMAN-PR-<N>.json
+    record (--force / PR URL overrides).
 Weekly test-suite review (`--test-refactor`, testrefactor.py; dry-run unless --live): per repo with
 repos.json "test_refactor", rank the slowest / least-impactful tests from GitHub Actions runtimes + a local
 timed run + coverage, have a deep-tier harness REBUILD or DELETE them under guardrails, and open ONE PR
@@ -1956,8 +1962,16 @@ def release_human_review(repo: str, number: int) -> int:
 def flag_for_human_review(repo: str, number: int, pr: dict[str, Any], login: str, *,
                           tier_info: dict[str, Any], diff: str, verdict: str | None = None,
                           reviewer: str | None = None, head: str | None = None,
-                          merge_candidate: bool = False) -> dict[str, Any] | None:
-    """Ping once per PR (channels: email by default; label/comment optional). Never raises."""
+                          merge_candidate: bool = False,
+                          review_body: str | None = None,
+                          review_withheld: bool = False,
+                          review_path: Path | str | None = None) -> dict[str, Any] | None:
+    """Ping once per PR (channels: email by default; label/comment optional). Never raises.
+
+    When review_withheld is True (non-own PR whose review was not posted to GitHub): no GitHub
+    label/comment ping is sent, the full review is included in the email, and the email is sent
+    even if a prior HUMAN-PR-N.json / GitHub marker exists (cron already skips withheld PRs via
+    withheld_human_review_by, so re-entry only happens on explicit --force / URL runs)."""
     try:
         cfg = tier_info.get("cfg")
         meta = tier_info.get("meta")
@@ -1968,7 +1982,7 @@ def flag_for_human_review(repo: str, number: int, pr: dict[str, Any], login: str
         hr = human_review_config(cfg)
         channels = human_review_channels(hr)
         mpath = human_marker_path(repo, number)
-        if mpath.is_file():
+        if mpath.is_file() and not review_withheld:
             print(f"    human-review: already flagged (local marker {mpath.name}); skip")
             return None
         label = str(hr.get("label") or "needs-human-review")
@@ -1986,31 +2000,39 @@ def flag_for_human_review(repo: str, number: int, pr: dict[str, Any], login: str
             hold_note = comment_note = None
         rec: dict[str, Any] = {"repo": repo, "number": number, "url": url, "head": head, "reasons": reasons,
                                "verdict": verdict, "reviewer": reviewer, "channels": sorted(channels),
-                               "merge_held": held, "at": _now_z()}
+                               "merge_held": held, "review_withheld": review_withheld, "at": _now_z()}
+        if review_path:
+            rec["review_path"] = str(review_path)
         print(f"    human-review: FLAG ({', '.join(sorted(channels)) or 'no channels'}) → {'; '.join(reasons)}")
-        try:
-            prior = human_review_prior(repo, number, label, login)
-        except Exception as e:  # noqa: BLE001
-            prior, rec["prior_check"] = None, f"failed ({e})"
-            print(f"    ! human-review: prior-flag check failed ({e})"
-                  + ("; comment skipped to avoid a duplicate" if "comment" in channels else ""), file=sys.stderr)
-        if prior:
-            print(f"    human-review: already flagged on GitHub ({prior}); recording marker, no new ping")
-            rec.update({"label": "present", "comment": "skipped (already flagged)",
-                        "email": "skipped (already flagged)", "prior": prior})
-            mpath.parent.mkdir(parents=True, exist_ok=True)
-            mpath.write_text(json.dumps(rec, indent=2), encoding="utf-8")
-            return rec
-        if "label" in channels:
+        prior = None
+        if not review_withheld:
+            try:
+                prior = human_review_prior(repo, number, label, login)
+            except Exception as e:  # noqa: BLE001
+                prior, rec["prior_check"] = None, f"failed ({e})"
+                print(f"    ! human-review: prior-flag check failed ({e})"
+                      + ("; comment skipped to avoid a duplicate" if "comment" in channels else ""), file=sys.stderr)
+            if prior:
+                print(f"    human-review: already flagged on GitHub ({prior}); recording marker, no new ping")
+                rec.update({"label": "present", "comment": "skipped (already flagged)",
+                            "email": "skipped (already flagged)", "prior": prior})
+                mpath.parent.mkdir(parents=True, exist_ok=True)
+                mpath.write_text(json.dumps(rec, indent=2), encoding="utf-8")
+                return rec
+        if "label" not in channels:
+            rec["label"] = "off (channels)"
+        elif review_withheld:
+            rec["label"] = "skipped (review withheld)"
+        else:
             _ensure_label(repo, hr)
             # REST, not `gh pr edit` (that fails on the Projects-classic GraphQL deprecation).
             cp = run(["gh", "api", "-X", "POST", f"repos/{repo}/issues/{number}/labels", "-f", f"labels[]={label}"],
                      timeout=120)
             rec["label"] = "added" if cp.returncode == 0 else f"failed ({_one_line(cp.stderr or cp.stdout, 160)})"
-        else:
-            rec["label"] = "off (channels)"
         if "comment" not in channels:
             rec["comment"] = "off (channels)"
+        elif review_withheld:
+            rec["comment"] = "skipped (review withheld)"
         elif "prior_check" in rec:
             rec["comment"] = "skipped (prior check failed)"
         else:
@@ -2020,16 +2042,41 @@ def flag_for_human_review(repo: str, number: int, pr: dict[str, Any], login: str
             rec["comment"] = "posted" if cp.returncode == 0 else f"failed ({_one_line(cp.stderr or cp.stdout, 160)})"
         if "email" in channels:
             title = pr.get("title") or (meta or {}).get("title") or ""
+            author = pr_author(pr)
             m = meta or {}
-            ebody = (f"The PR overseer flagged {repo}#{number} for a human second look.\n\n"
-                     f"{title}\n{url}\n\n"
-                     f"Why: {'; '.join(reasons)}\n"
-                     f"Size: +{m.get('additions', '?')} -{m.get('deletions', '?')} across "
-                     f"{m.get('changedFiles', '?')} files\n"
-                     f"Overseer verdict: {verdict or 'not available'}" + (f" ({reviewer})" if reviewer else "")
-                     + "\n\nThe deep review already ran; this is the extra-eyes ping.\n"
-                     + (f"\n{hold_note}\n" if hold_note else ""))
-            subj = f"[overseer] {'Merge held, n' if held else 'N'}eeds human review: {repo}#{number} {title}"
+            if review_withheld:
+                note = ("No review was posted to GitHub (PR is not authored by you). "
+                        "The full review is below so you can review it manually and handle the messaging.")
+            else:
+                note = "The deep review already ran; this is the extra-eyes ping."
+            parts = [
+                f"The PR overseer flagged {repo}#{number} for a human second look.",
+                "",
+                title,
+                url,
+                "",
+            ]
+            if author:
+                parts.append(f"Author: {author}")
+            parts += [
+                f"Why: {'; '.join(reasons)}",
+                f"Size: +{m.get('additions', '?')} -{m.get('deletions', '?')} across {m.get('changedFiles', '?')} files",
+                f"Overseer verdict: {verdict or 'not available'}" + (f" ({reviewer})" if reviewer else ""),
+            ]
+            if review_path:
+                parts.append(f"Local review file: {review_path}")
+            parts += ["", note]
+            if hold_note:
+                parts += ["", hold_note]
+            if review_body and review_body.strip():
+                parts += ["", "--- Full review ---", "", review_body.strip()]
+            ebody = "\n".join(parts) + "\n"
+            if held:
+                subj = f"[overseer] Merge held, needs human review: {repo}#{number} {title}"
+            elif review_withheld:
+                subj = f"[overseer] Review not posted, needs human review: {repo}#{number} {title}"
+            else:
+                subj = f"[overseer] Needs human review: {repo}#{number} {title}"
             rec["email"] = send_human_review_email(hr, subj[:200], ebody)
         else:
             rec["email"] = "off (channels)"
@@ -2397,12 +2444,27 @@ def submit_github_review(repo: str, number: int, verdict: str, body: str, *,
     return True, event
 
 
-def soft_approval_reason(verdict: str | None, tier_info: dict[str, Any], diff: str, pr: dict[str, Any]
-                         ) -> str | None:
-    """Reason string when an APPROVE must be soft (PR is flagged for human review), else None.
-    Pure decision (ignores the once-per-PR marker, so --force re-reviews stay soft). Fails closed:
-    an unexpected error → soft."""
-    if verdict != "APPROVE" or not tier_info:
+def withheld_human_review_by(repo: str, number: int) -> str | None:
+    """Return a reason if a review for this PR was already withheld for human review (emailed, not posted)."""
+    mpath = human_marker_path(repo, number)
+    if not mpath.is_file():
+        return None
+    try:
+        rec = json.loads(mpath.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if rec.get("review_withheld") and not rec.get("cleared_at"):
+        when = rec.get("at") or "?"
+        verdict = rec.get("verdict") or "?"
+        return f"review withheld for human review ({verdict}, {when}; {mpath.name})"
+    return None
+
+
+def human_review_reason(tier_info: dict[str, Any], diff: str, pr: dict[str, Any]) -> str | None:
+    """Reason string when a PR is flagged for human review (any verdict), else None.
+    Pure decision (ignores the once-per-PR marker, so --force re-reviews stay consistent). Fails closed:
+    an unexpected error returns a reason string."""
+    if not tier_info:
         return None
     try:
         flag, reasons, _why = human_review_decision(tier_info.get("tier"), tier_info.get("meta"), diff,
@@ -2410,6 +2472,16 @@ def soft_approval_reason(verdict: str | None, tier_info: dict[str, Any], diff: s
     except Exception as e:  # noqa: BLE001
         return f"human-review check error {e!r}; fail closed"
     return "; ".join(reasons) if flag else None
+
+
+def soft_approval_reason(verdict: str | None, tier_info: dict[str, Any], diff: str, pr: dict[str, Any]
+                         ) -> str | None:
+    """Reason string when an APPROVE must be soft (PR is flagged for human review), else None.
+    Pure decision (ignores the once-per-PR marker, so --force re-reviews stay soft). Fails closed:
+    an unexpected error → soft."""
+    if verdict != "APPROVE":
+        return None
+    return human_review_reason(tier_info, diff, pr)
 
 
 def write_review(repo_path: Path, repo: str, pr: dict[str, Any], harness_id: str,
@@ -2581,6 +2653,8 @@ def derive_state(st: dict[str, Any], fix_state: dict[str, Any], max_fix: int,
     """State label implied by history (used by --sync-labels). None = leave the PR alone."""
     latest = st.get("latest")
     if not latest:
+        if human_hold:
+            return "needs_human", "review withheld; flagged for human review"
         return None, "no verdict yet"
     v = latest.get("verdict")
     attempts = fix_state.get("attempts") or []
@@ -2824,35 +2898,50 @@ def _review_one(repo: str, repo_path: Path, pr: dict[str, Any], harness_data: di
             )
             print(f"    saved {path}")
             outcome.append(f"{verdict} by {hid} {_model_label(hid)}")
-            own = pr_author(pr).lower() == login.lower()
+            own = bool(login) and pr_author(pr).lower() == login.lower()
             action = plan_action(mode, verdict, pr, login, merge_on_approve=merge_on_approve)
-            # Flagged for human review + APPROVE → soft approval (COMMENT), never a formal approve.
-            soft_why = soft_approval_reason(verdict, tier_info, diff, pr)
-            if soft_why is not None:
-                print(f"    soft approval: flagged for human review ({soft_why}); APPROVE posted as a comment")
-            if mode == "self_review" and own:
-                # Self-approval/request-changes is rejected by GitHub → comment instead.
-                ok, detail = post_review_comment(repo, number, verdict, body, reviewed_sha=reviewed_sha,
-                                                 soft_why=soft_why)
-            else:
-                ok, detail = submit_github_review(repo, number, verdict, body, soft_why=soft_why)
-            if soft_why is not None:
-                outcome.append("soft approval (needs human review)")
-            if ok:
-                print(f"    github: {detail}")
-                state_key = ("needs_human" if soft_why is not None else
-                             "approved" if verdict == "APPROVE" else "changes_requested")
-                if set_pr_state(repo, number, state_key) is not None:
+            # Flagged for human review:
+            # - not authored by login: do NOT post any review on GitHub (APPROVE or REQUEST_CHANGES);
+            #   the full review is emailed so the human can review manually and handle messaging.
+            # - authored by login + APPROVE: soft approval (comment note + merge hold).
+            human_why = human_review_reason(tier_info, diff, pr)
+            review_withheld = (not own) and (human_why is not None)
+            soft_why = soft_approval_reason(verdict, tier_info, diff, pr) if not review_withheld else None
+            if review_withheld:
+                print(f"    human-review: not posting {verdict} review on GitHub "
+                      f"(not authored by {login or '?'}; {human_why}) — emailing full review")
+                ok, detail = True, "withheld (needs human review)"
+                outcome.append("review withheld (needs human review)")
+                if set_pr_state(repo, number, "needs_human") is not None:
                     label_done = True
             else:
-                print(f"    ! github review failed: {detail}", file=sys.stderr)
-                outcome.append("posting review FAILED")
+                if soft_why is not None:
+                    print(f"    soft approval: flagged for human review ({soft_why}); APPROVE posted as a comment")
+                if mode == "self_review" and own:
+                    # Self-approval/request-changes is rejected by GitHub → comment instead.
+                    ok, detail = post_review_comment(repo, number, verdict, body, reviewed_sha=reviewed_sha,
+                                                     soft_why=soft_why)
+                else:
+                    ok, detail = submit_github_review(repo, number, verdict, body, soft_why=soft_why)
+                if soft_why is not None:
+                    outcome.append("soft approval (needs human review)")
+                if ok:
+                    print(f"    github: {detail}")
+                    state_key = ("needs_human" if soft_why is not None else
+                                 "approved" if verdict == "APPROVE" else "changes_requested")
+                    if set_pr_state(repo, number, state_key) is not None:
+                        label_done = True
+                else:
+                    print(f"    ! github review failed: {detail}", file=sys.stderr)
+                    outcome.append("posting review FAILED")
             # Extra-eyes ping for really risky / really large deep PRs (never blocks the review).
             flag_rec = None
             if tier_info:
                 flag_rec = flag_for_human_review(repo, number, pr, login, tier_info=tier_info, diff=diff,
                                                  verdict=verdict, reviewer=f"{hid} {_model_label(hid)}",
-                                                 head=reviewed_sha, merge_candidate=(action == "merge"))
+                                                 head=reviewed_sha, merge_candidate=(action == "merge"),
+                                                 review_body=body, review_withheld=review_withheld,
+                                                 review_path=path)
             if action == "merge":
                 held, held_why = (False, "")
                 if ok:
@@ -4233,7 +4322,7 @@ def main() -> int:
                       "in self_review repos")
                 continue
             elif not args.force:
-                why = existing_review_by(repo, num, login)
+                why = existing_review_by(repo, num, login) or withheld_human_review_by(repo, num)
                 if why:
                     # Quiet: no leading "!" so cron-run.sh doesn't log idle skips.
                     print(f"  skip PR #{pr['number']} by {pr_author(pr) or '?'}: {pr['title']} → {why}")
@@ -4332,7 +4421,13 @@ def main() -> int:
                         set_active_tier(None, None)
                         # Dry run: report only — never labels, comments or emails.
                         f_, rs_, wn_ = human_review_decision(t_, m_, d_, tcfg, pr)
-                        if f_ and human_marker_path(repo, num).is_file():
+                        own_ = bool(login) and pr_author(pr).lower() == login.lower()
+                        if f_ and not own_:
+                            print(f"    human-review (dry-run): WOULD FLAG → NO review posted to GitHub "
+                                  f"(not authored by {login}; full review emailed instead) "
+                                  f"[channels: {', '.join(sorted(human_review_channels(human_review_config(tcfg))))}]"
+                                  f": {'; '.join(rs_)}")
+                        elif f_ and human_marker_path(repo, num).is_file():
                             print("    human-review (dry-run): already flagged (local marker)")
                         elif f_:
                             held_ = (approve_plan == "merge"

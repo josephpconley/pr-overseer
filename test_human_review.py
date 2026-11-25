@@ -471,5 +471,176 @@ class EmailOnly(unittest.TestCase):
         self.assertTrue(rv.human_marker_path("o/r", 9).is_file())
 
 
+class WithheldNonOwnReview(unittest.TestCase):
+    """Non-own PRs flagged for human review: never post a GitHub review; email full review; skip on later cron ticks."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        t = Path(self.tmp.name)
+        self.hp = t / "h.json"
+        self.hp.write_text(json.dumps({"default_cooldown_minutes": 15, "harnesses": [
+            {"id": "muse", "bin": "muse", "cooldown_until": None}]}))
+        for name, val in (("FALLBACK_REVIEWS", t / "reviews"), ("load_tiers", lambda *a, **k: CFG)):
+            p = mock.patch.object(rv, name, val); p.start(); self.addCleanup(p.stop)
+        self.other_pr = {"number": 18, "title": "Workflow change", "url": "https://github.com/o/r/pull/18",
+                         "headRefName": "feat/wf", "isDraft": False, "author": {"login": "alice"}}
+        self.info_all = {"cfg": CFG_ALL, "tier": "deep", "reason": "wf", "source": "rules",
+                         "meta": meta([(".github/workflows/x.yml", 3, 0)])}
+
+    def test_flag_withheld_emails_full_review_and_skips_github_channels(self):
+        full_body = "Summary of findings.\n\n### Important\n- `x.yml:10`: check permissions.\n\nVERDICT: APPROVE\n"
+        with mock.patch.object(rv, "run", return_value=cp(0, "ok")) as r:
+            rec = rv.flag_for_human_review("o/r", 18, self.other_pr, "me", tier_info=self.info_all, diff="",
+                                           verdict="APPROVE", reviewer="muse muse-wonder-1.0", head="abc123",
+                                           review_body=full_body, review_withheld=True, review_path="/tmp/PR-18.md")
+        cmds = [c.args[0] for c in r.call_args_list]
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0][0], "/usr/sbin/sendmail")
+        mail = r.call_args_list[0].kwargs["input_text"]
+        self.assertIn("Subject: [overseer] Review not posted, needs human review: o/r#18 Workflow change", mail)
+        self.assertIn("Author: alice", mail)
+        self.assertIn("No review was posted to GitHub", mail)
+        self.assertIn("Local review file: /tmp/PR-18.md", mail)
+        self.assertIn("--- Full review ---", mail)
+        self.assertIn("`x.yml:10`: check permissions.", mail)
+        self.assertTrue(rec["review_withheld"])
+        self.assertEqual(rec["label"], "skipped (review withheld)")
+        self.assertEqual(rec["comment"], "skipped (review withheld)")
+        saved = json.loads(rv.human_marker_path("o/r", 18).read_text())
+        self.assertTrue(saved["review_withheld"])
+        self.assertEqual(saved["review_path"], "/tmp/PR-18.md")
+
+        # Re-running with review_withheld=True (e.g. --force / URL run) sends the fresh full review email.
+        full_body_2 = "Second pass.\n\nVERDICT: REQUEST_CHANGES\n"
+        with mock.patch.object(rv, "run", return_value=cp(0, "ok")) as r2:
+            rec2 = rv.flag_for_human_review("o/r", 18, self.other_pr, "me", tier_info=self.info_all, diff="",
+                                            verdict="REQUEST_CHANGES", reviewer="muse muse-wonder-1.0", head="def456",
+                                            review_body=full_body_2, review_withheld=True, review_path="/tmp/PR-18.md")
+        self.assertEqual(len(r2.call_args_list), 1)
+        self.assertIn("Second pass.", r2.call_args_list[0].kwargs["input_text"])
+        self.assertEqual(rec2["verdict"], "REQUEST_CHANGES")
+
+    def test_flag_non_withheld_also_includes_full_review_when_given(self):
+        full_body = "Own PR review details.\n\nVERDICT: APPROVE\n"
+        info = {"cfg": CFG, "tier": "deep", "reason": "wf", "source": "rules",
+                "meta": meta([(".github/workflows/x.yml", 3, 0)])}
+        def fake(cmd, **kw):
+            return cp(0, '{"labels":[],"comments":[]}') if cmd[:3] == ["gh", "pr", "view"] else cp(0, "ok")
+        with mock.patch.object(rv, "run", side_effect=fake) as r:
+            rv.flag_for_human_review("o/r", 7, PR, "me", tier_info=info, diff="", verdict="APPROVE",
+                                     merge_candidate=True, review_body=full_body, review_withheld=False)
+        mail = next(c.kwargs["input_text"] for c in r.call_args_list if c.args[0][0] == "/usr/sbin/sendmail")
+        self.assertIn("--- Full review ---", mail)
+        self.assertIn("Own PR review details.", mail)
+
+    def test_withheld_human_review_by_gate(self):
+        self.assertIsNone(rv.withheld_human_review_by("o/r", 18))
+        mp = rv.human_marker_path("o/r", 18); mp.parent.mkdir(parents=True, exist_ok=True)
+        mp.write_text(json.dumps({"review_withheld": False, "verdict": "APPROVE", "at": "2026-11-25T10:00:00Z"}))
+        self.assertIsNone(rv.withheld_human_review_by("o/r", 18))
+        mp.write_text(json.dumps({"review_withheld": True, "verdict": "APPROVE", "at": "2026-11-25T10:00:00Z"}))
+        why = rv.withheld_human_review_by("o/r", 18)
+        self.assertIsNotNone(why); self.assertIn("review withheld for human review", why)
+        mp.write_text(json.dumps({"review_withheld": True, "verdict": "APPROVE", "at": "2026-11-25T10:00:00Z",
+                                  "cleared_at": "2026-11-25T11:00:00Z"}))
+        self.assertIsNone(rv.withheld_human_review_by("o/r", 18))
+
+    def _run_review_one(self, pr, files, review_text, mode="review"):
+        m = meta(files)
+        emails = []
+        stubs = {
+            "fetch_ci_status": lambda *a: {"statusCheckRollup": []},
+            "summarize_ci": lambda *a: {"state": "green"},
+            "ci_label": lambda *a: "green",
+            "create_pr_worktree": lambda *a: Path(self.tmp.name),
+            "remove_worktree": lambda *a: None, "ensure_stubs": lambda *a: [],
+            "fetch_pr_diff": lambda *a: "", "read_context": lambda *a: "",
+            "fetch_classify_meta": lambda *a: m,
+            "write_review": lambda *a: Path(self.tmp.name) / f"PR-{pr['number']}.md",
+            "_ensure_label": lambda *a: None,
+            "send_human_review_email": lambda hr, subj, body: (emails.append((subj, body)), "sent (test)")[1],
+        }
+        def fake_run(cmd, **kw):
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return cp(0, '{"labels":[],"comments":[]}')
+            if cmd[:2] == ["git", "rev-parse"]:
+                return cp(0, "abc\n")
+            return cp(0, "ok")
+        runner = mock.Mock(return_value=cp(0, review_text, ""))
+        with mock.patch.multiple(rv, **stubs), mock.patch.object(rv, "run", side_effect=fake_run), \
+                mock.patch.object(rv, "submit_github_review", return_value=(True, "APPROVE")) as submit, \
+                mock.patch.object(rv, "post_review_comment", return_value=(True, "COMMENT")) as comment, \
+                mock.patch.object(rv, "admin_merge", return_value=(True, "MERGED")) as merge, \
+                mock.patch.object(rv, "set_pr_state", return_value=[]) as set_state, \
+                mock.patch.dict(rv.RUNNERS, {"muse": runner}), \
+                mock.patch.object(rv.shutil, "which", return_value="/x"), \
+                mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out:
+            rv.review_one("o/r", Path(self.tmp.name), pr, {}, self.hp, mode=mode, login="me", pre=(None, {}, {}))
+        return submit, comment, merge, set_state, emails, out.getvalue()
+
+    def test_review_one_withholds_both_verdicts_for_other_author_and_emails_full_review(self):
+        for mode in ("review", "self_review"):
+            for verdict, body in (
+                ("APPROVE", "Looks clean overall.\n\n### Important\n- Check workflow perms.\n\nVERDICT: APPROVE\n"),
+                ("REQUEST_CHANGES", "### Blocking\n- Secret leak in workflow.\n\nVERDICT: REQUEST_CHANGES\n"),
+            ):
+                with self.subTest(mode=mode, verdict=verdict):
+                    mp = rv.human_marker_path("o/r", 18)
+                    if mp.exists():
+                        mp.unlink()
+                    submit, comment, merge, set_state, emails, out = self._run_review_one(
+                        self.other_pr, [(".github/workflows/ci.yml", 5, 0)], body, mode=mode)
+                    submit.assert_not_called()
+                    comment.assert_not_called()
+                    merge.assert_not_called()
+                    self.assertEqual(len(emails), 1)
+                    subj, ebody = emails[0]
+                    self.assertIn("Review not posted, needs human review", subj)
+                    self.assertIn("No review was posted to GitHub", ebody)
+                    self.assertIn(body.strip(), ebody)
+                    self.assertIn(verdict, ebody)
+                    self.assertTrue(json.loads(mp.read_text())["review_withheld"])
+                    states = [c.args[2] for c in set_state.call_args_list]
+                    self.assertEqual(states, ["in_progress", "needs_human"])
+                    self.assertIn(f"not posting {verdict} review on GitHub", out)
+
+    def test_review_one_still_posts_non_human_needed_review_for_other_author(self):
+        body = "Minor nit only.\n\nVERDICT: APPROVE\n"
+        submit, comment, merge, set_state, emails, _ = self._run_review_one(
+            self.other_pr, [("src/a.ts", 5, 0)], body, mode="review")
+        submit.assert_called_once()
+        comment.assert_not_called()
+        merge.assert_not_called()
+        self.assertEqual(emails, [])
+
+    def test_main_skips_withheld_pr_on_next_tick_without_force(self):
+        import io, sys
+        t = Path(self.tmp.name)
+        clone = t / "clone"; clone.mkdir()
+        repos = t / "repos.json"
+        repos.write_text(json.dumps({"github_login": "me", "repos": [
+            {"repo": "o/r", "path": str(clone), "review_mode": "review"}]}))
+        mp = rv.human_marker_path("o/r", 18); mp.parent.mkdir(parents=True, exist_ok=True)
+        mp.write_text(json.dumps({"repo": "o/r", "number": 18, "review_withheld": True,
+                                  "verdict": "APPROVE", "at": "2026-11-25T10:00:00Z"}))
+        def fake_run(cmd, **kw):
+            if cmd[:3] == ["gh", "api", "user"]:
+                return cp(0, "me\n")
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return cp(0, '{"reviews":[],"comments":[]}')
+            return cp(0, "")
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["review.py", "--repos-config", str(repos), "--harnesses-config", str(self.hp)]), \
+                mock.patch("fcntl.flock"), \
+                mock.patch.object(rv, "run", side_effect=fake_run), \
+                mock.patch.object(rv, "list_review_requested_prs", return_value=[self.other_pr]), \
+                mock.patch.object(rv, "review_one") as ro, \
+                mock.patch("sys.stdout", out):
+            rc = rv.main()
+        self.assertEqual(rc, 0)
+        ro.assert_not_called()
+        self.assertIn("skip PR #18 by alice", out.getvalue())
+        self.assertIn("review withheld for human review", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

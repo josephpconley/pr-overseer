@@ -172,15 +172,18 @@ class SoftApproval(unittest.TestCase):
 
 
 class ReviewOneIntegration(base.Base):
-    """review_one with everything mocked: which GitHub call does a flagged / unflagged APPROVE make?"""
-    def run_one(self, meta, mode="review"):
+    """review_one with everything mocked: which GitHub call does a flagged / unflagged review make?"""
+    def run_one(self, meta, mode="review", own=None, flag_mock=None):
         def fake_tier(repo, number, hpath, *, diff, override, info=None, use_cache=True):
             if info is not None:
                 info.update({"cfg": CFG, "meta": meta, "tier": "deep"})
             return "tier=deep"
-        pr = dict(base.PR, author={"login": "someone-else"}) if mode == "review" else base.PR
+        if own is None:
+            own = (mode == "self_review")
+        pr = base.PR if own else dict(base.PR, author={"login": "someone-else"})
+        fm = flag_mock if flag_mock is not None else mock.Mock(return_value=None)
         with mock.patch.object(rv, "apply_tier_for_pr", side_effect=fake_tier), \
-             mock.patch.object(rv, "flag_for_human_review", return_value=None), \
+             mock.patch.object(rv, "flag_for_human_review", fm), \
              mock.patch.object(rv, "fetch_pr_authoring", return_value={}), \
              mock.patch.object(rv, "detect_latest_commit_harness", return_value=([], {})):
             out, err = io.StringIO(), io.StringIO()
@@ -189,12 +192,37 @@ class ReviewOneIntegration(base.Base):
                               mode=mode, login=base.LOGIN, merge_on_approve=True)
         return out.getvalue() + err.getvalue()
 
-    def test_flagged_approve_is_soft(self):
+    def test_flagged_other_author_approve_not_posted_emailed_instead(self):
+        fm = mock.Mock(return_value=None)
+        with mock.patch.object(rv, "submit_github_review") as submit, \
+             mock.patch.object(rv, "post_review_comment") as post:
+            log = self.run_one(RISKY, mode="review", own=False, flag_mock=fm)
+        submit.assert_not_called()
+        post.assert_not_called()
+        self.assertIn("not posting APPROVE review on GitHub", log)
+        kw = fm.call_args.kwargs
+        self.assertTrue(kw["review_withheld"])
+        self.assertIn("Looks fine.", kw["review_body"])
+
+    def test_flagged_other_author_request_changes_not_posted(self):
+        self.verdict_out = "### Blocking\n- Bad bug.\n\nVERDICT: REQUEST_CHANGES\n"
+        fm = mock.Mock(return_value=None)
+        with mock.patch.object(rv, "submit_github_review") as submit, \
+             mock.patch.object(rv, "post_review_comment") as post:
+            log = self.run_one(RISKY, mode="review", own=False, flag_mock=fm)
+        submit.assert_not_called()
+        post.assert_not_called()
+        self.assertIn("not posting REQUEST_CHANGES review on GitHub", log)
+        kw = fm.call_args.kwargs
+        self.assertTrue(kw["review_withheld"])
+        self.assertIn("Bad bug.", kw["review_body"])
+
+    def test_flagged_own_pr_review_mode_is_soft(self):
         seen = {}
         def submit(repo, n, verdict, body, soft_why=None):
             seen.update(verdict=verdict, soft_why=soft_why); return True, "x"
         with mock.patch.object(rv, "submit_github_review", side_effect=submit):
-            log = self.run_one(RISKY)
+            log = self.run_one(RISKY, mode="review", own=True)
         self.assertEqual(seen["verdict"], "APPROVE"); self.assertIn("hard-risk path", seen["soft_why"])
         self.assertIn("soft approval", log)
 
@@ -203,7 +231,7 @@ class ReviewOneIntegration(base.Base):
         def submit(repo, n, verdict, body, soft_why=None):
             seen.update(verdict=verdict, soft_why=soft_why); return True, "x"
         with mock.patch.object(rv, "submit_github_review", side_effect=submit):
-            self.run_one(PLAIN)
+            self.run_one(PLAIN, mode="review", own=False)
         self.assertEqual(seen["verdict"], "APPROVE"); self.assertIsNone(seen["soft_why"])
 
     def test_flagged_self_review_keeps_merge_hold(self):
@@ -212,10 +240,11 @@ class ReviewOneIntegration(base.Base):
         def post(repo, n, verdict, body, reviewed_sha=None, soft_why=None):
             seen["soft_why"] = soft_why; return True, "COMMENT"
         flag_rec = {"reasons": ["hard-risk path"]}
+        fm = mock.Mock(return_value=flag_rec)
         with mock.patch.object(rv, "post_review_comment", side_effect=post), \
              mock.patch.object(rv, "fetch_ci_status", return_value=base.ci_status(base.GREEN)):
             with mock.patch.object(rv, "apply_tier_for_pr") as at, \
-                 mock.patch.object(rv, "flag_for_human_review", return_value=flag_rec), \
+                 mock.patch.object(rv, "flag_for_human_review", fm), \
                  mock.patch.object(rv, "fetch_pr_authoring", return_value={}), \
                  mock.patch.object(rv, "detect_latest_commit_harness", return_value=([], {})):
                 at.side_effect = lambda *a, info=None, **k: (info.update({"cfg": CFG, "meta": RISKY, "tier": "deep"}), "t")[1]
@@ -226,6 +255,8 @@ class ReviewOneIntegration(base.Base):
         self.assertIsNotNone(seen["soft_why"])
         self.assertEqual(self.merges(), [])
         self.assertIn("merge held", out.getvalue())
+        self.assertFalse(fm.call_args.kwargs["review_withheld"])
+        self.assertIn("Looks fine.", fm.call_args.kwargs["review_body"])
 
 
 if __name__ == "__main__":
